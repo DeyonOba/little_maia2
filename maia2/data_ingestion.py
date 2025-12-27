@@ -1,4 +1,3 @@
-import os
 import pathlib
 import requests
 import subprocess
@@ -45,7 +44,8 @@ def get_data_info(url: str) -> tuple[float, str]:
         print(f"An error occured during request header manipulation: {e}")
     return None, None
 
-def z(year: int, month: int) -> None:
+
+def download_lichess_database(year: int, month: int) -> None:
     data_dir = setup_data_directory()
 
     if any(data_dir.glob(f"*{year}-{month:02d}.pgn*")):
@@ -91,19 +91,14 @@ def z(year: int, month: int) -> None:
     else:
         print(f"\nDownloaded Lichess database for {year}-{month:02d} successfully.")
 
-    
-    
 
-def download_game_database(year: int, month: int) -> None:
-    subprocess.run(["./maia2/data_ingestion.sh", str(year), f"{month:02d}"], check=True)
 
 if __name__ == "__main__":
-    # url = "https://database.lichess.org/standard/lichess_db_standard_rated_2013-01.pgn.zst"
-    # expected_size = 17.8 #(MB)
-    # content_size, content_type = get_data_info(url)
-    # print(f"Excepted size: {expected_size}")
-    # print(f"Requested content size: {content_size}")
-    # print(f"Requested content type: {content_type}")
+    url = "https://database.lichess.org/standard/lichess_db_standard_rated_2013-01.pgn.zst"
+    expected_size = 17.8 #(MB)
+    content_size, content_type = get_data_info(url)
+    print(f"Excepted size: {expected_size}")
+    print(f"Requested content size: {content_size}")
+    print(f"Requested content type: {content_type}")
 
-    # # download_game_database(2013, 1)
-    z(2013, 1)
+    download_lichess_database(year=2013, month=1)
