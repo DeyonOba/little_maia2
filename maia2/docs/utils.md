@@ -38,4 +38,40 @@ def generate_promotion_moves():
 8. Repeat the same steps but using the assigned `black_promotion_rank`, and `turn=chess.BLACK`.
 9. Return `all_pawn_promotion_moves`.
 
+## function: `get_all_possible_moves`
+
+**Aim**: Generate all possible move over the board for each piece.
+
+Each piece on a chess board have distinct move and move constraints.
+> **Piece Movements**: (*Gemini AI Overview*)
+> - King: Moves one square in any direction (horizontal, vertical, or diagonal).
+> - Queen: Moves any number of squares in any straight line (horizontally, vertically, or diagonally).
+> - Rook: Moves any number of squares horizontally or vertically.
+> - Bishop: Moves any number of squares diagonally, staying on the same color square.
+> - Knight: Moves in an "L" shape (two squares in one direction, then one square perpendicularly) and can jump over other pieces.
+> - Pawn: Moves one square forward, but two squares on its first move. Captures one square diagonally forward.
+
+If you'll look closely at the piece movements you would notice that the queen moves is a superset for all king, rook, bishop, and pawn moves, but knight moves are distinct. In order to generate all the possible moves we need three distinct set of moves *(queen moves + knight moves + pawn promotion moves)*.
+
+**Code**:
+```python
+def get_all_possible_moves():
+    all_possible_piece_moves = []
+
+    for rank in range(8):
+        for file in range(8):
+            board = chess.Board(None)
+            square = chess.square(file, rank)
+            board.set_piece_at(square, chess.Piece(chess.QUEEN, chess.WHITE))
+            queen_moves = [move.uci() for move in board.legal_moves]
+            all_possible_piece_moves.extend(queen_moves)
+
+            # board.clear_board()
+            board = chess.Board(None)
+            board.set_piece_at(square, chess.Piece(chess.KNIGHT, chess.WHITE))
+            knight_moves = [move.uci() for move in board.legal_moves]
+            all_possible_piece_moves.extend(knight_moves)
+    pawn_promotion_moves = generate_promotion_moves()
+    return all_possible_piece_moves + pawn_promotion_moves
+```
 
