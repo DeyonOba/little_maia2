@@ -30,10 +30,12 @@ def generate_promotion_moves():
 **Code Description**:
 1. Define a variable `all_pawn_promotion_moves` that stores a list of pawn promotion moves.
 2. Define two variables `white_promotion_rank`, and `black_promotion_rank` that stores the rank each opponent (black, or white) must reach before promotion. The board rank 6 and 1 were assigned using zero indexing.
-3. Iterate through each file (i.e a file in a chess board is made up of 8 rows)
+3. Iterate through each file (i.e a file in a chess board is made up of 8 columns from a to h)
 4. Create an empty chess board with no chess pieces on the board, then set a pawn on the assigned iterable variable `file` number and the default promotion rank (white).
 5. Generate all legal promotion moves using a list comprehension to store the UCI formated chess move, then update the list `all_pawn_promotion_moves` with the generated moves.
 6. Before generating the promotion move for black the board needs to be cleared again so that the moves generated would not include promotion moves for white also.
 7. Assign the colour (i.e black) to play next, without assigning the colour or `chess.Board().turn`, the chess legal move generator would not generate any move since the default `turn` set upon the `chess.Board` instantiation is `chess.WHITE`.
 8. Repeat the same steps but using the assigned `black_promotion_rank`, and `turn=chess.BLACK`.
 9. Return `all_pawn_promotion_moves`.
+
+
