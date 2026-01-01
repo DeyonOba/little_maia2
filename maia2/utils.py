@@ -1,5 +1,6 @@
 import pyzstd
 import chess
+import torch
 
 
 def decompress_zstd(compressed_file_path: str, decompressed_file_path: str) -> None:
@@ -47,4 +48,59 @@ def get_all_possible_moves():
     return all_possible_piece_moves + pawn_promotion_moves
 
 
-     
+def board_to_tensor(board: chess.Board) -> torch.Tensor:
+    """
+    List of board channels (
+        white pawn, white knight, white bishop, white rook, white queen, white king,
+        black pawn, black knight, black bishop, black rook, black queen, black king,
+        board colour,
+        white king side castling, white queen side castling,
+        black king side castling,  black queen side castling,
+        en passant
+    )
+    """
+    # Initialise tensor with zeros for the chessboard encoding
+    piece_channels = 6 # p, k, b, r, q, k (white, and black) * 2 
+    color_channel = 1
+    castling_rights_channels = 4
+    en_passant_channel = 1  
+    n_channels = (piece_channels * 2) + color_channel + castling_rights_channels + en_passant_channel
+    tensor = torch.zeros((n_channels, 8, 8), dtype=torch.float32)
+    
+
+    piece_types = [chess.PAWN, chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN, chess.KING]
+    map_piece_idx = {piece:idx for idx, piece in enumerate(piece_types)}
+
+    # Chess piece encoding
+    for piece_type in piece_types:
+        for color in [chess.WHITE, chess.BLACK]:
+            pieces = board.pieces(piece_type, color)
+            if pieces is None:
+                continue
+            
+            channel_index = map_piece_idx[piece_type] + (0 if color else 6)
+            for square in pieces:
+                rank, file = divmod(square, 8)
+                tensor[channel_index, file, rank] = 1.0
+
+    # Chess color move encoding
+    if board.turn:
+        tensor[(piece_channels * 2), :, :] = 1.0
+
+    # Castling rights move encoding
+    castling_rights = [
+        board.has_kingside_castling_rights(chess.WHITE),
+        board.has_queenside_castling_rights(chess.WHITE),
+        board.has_kingside_castling_rights(chess.BLACK),
+        board.has_queenside_castling_rights(chess.BLACK)
+    ]
+
+    for idx, castling_right in enumerate(castling_rights):
+        if castling_right:
+            tensor[(piece_channels * 2) + color_channel + idx, :, :] = 1.0
+
+    if board.ep_square:
+        rank, file = divmod(board.ep_square, 8)
+        tensor[piece_channels + color_channel + castling_rights_channels, rank, file] = 1.0
+
+    return tensor
