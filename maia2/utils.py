@@ -9,6 +9,25 @@ def decompress_zstd(compressed_file_path: str, decompressed_file_path: str) -> N
         pyzstd.decompress_stream(compressed_file, decompressed_file)
 
 
+def create_elo_dict():
+    interval = 100
+    start = 1100
+    stop = 2000
+
+    range_dict = {f"<{start}": 0}
+    range_index = 1
+
+    for lower_bound in range(start, stop, interval):
+        upper_bound = lower_bound + interval - 1
+
+        range_dict[f"{lower_bound}-{upper_bound}"] = range_index
+        range_index += 1
+    
+    range_dict[f">={stop}"] = range_index
+
+    return range_dict
+
+
 def generate_promotion_moves():
     all_pawn_promotion_moves = []
     white_promotion_rank, black_promotion_rank = 6, 1
