@@ -1,6 +1,7 @@
 import pyzstd
 import chess
 import torch
+import re
 
 
 def decompress_zstd(compressed_file_path: str, decompressed_file_path: str) -> None:
@@ -8,6 +9,18 @@ def decompress_zstd(compressed_file_path: str, decompressed_file_path: str) -> N
         # src -> dst: source file-like object, destination file-like object
         pyzstd.decompress_stream(compressed_file, decompressed_file)
 
+
+def readable_time(elapsed_time: int) -> str:
+    hours, rem = divmod(elapsed_time, 3600)
+    minutes, seconds = divmod(rem, 60)
+
+    if hours > 0:
+        return f"{hours}h {minutes}m {seconds}s"
+    elif minutes > 0:
+        return f"{minutes}m {seconds}s"
+    else:
+        return f"{seconds}s"
+    
 
 def create_elo_dict():
     interval = 100
