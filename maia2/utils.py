@@ -28,6 +28,21 @@ def create_elo_dict():
     return range_dict
 
 
+def map_to_category(elo: int, elo_dict: dict) -> int:
+    start = 1100
+    stop = 2000
+    interval = 100
+
+    if elo < start:
+        return elo_dict[f"<{start}"]
+    elif elo >= stop:
+        return elo_dict[f">={stop}"]
+    else:
+        lower_bound = start + ((elo - start) // interval) * interval
+        upper_bound = lower_bound + interval - 1
+        return elo_dict[f"{lower_bound}-{upper_bound}"]
+
+
 def generate_promotion_moves():
     all_pawn_promotion_moves = []
     white_promotion_rank, black_promotion_rank = 6, 1
