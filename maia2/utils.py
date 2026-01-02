@@ -10,6 +10,16 @@ def decompress_zstd(compressed_file_path: str, decompressed_file_path: str) -> N
         pyzstd.decompress_stream(compressed_file, decompressed_file)
 
 
+def extract_clock_time(comment: str) -> int:
+    pattern = r"\[%clk (\d+):(\d+):(\d+)\]"
+    match = re.search(pattern, comment)
+    if match:
+        hours, minutes, seconds = map(int, match.groups())
+        total_seconds = hours * 3600 + minutes * 60 + seconds
+        return total_seconds
+    return None
+
+
 def readable_time(elapsed_time: int) -> str:
     hours, rem = divmod(elapsed_time, 3600)
     minutes, seconds = divmod(rem, 60)
