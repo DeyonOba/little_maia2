@@ -5,47 +5,42 @@ from tqdm import tqdm
 import io
 import chess.pgn
 import pyzstd
+from maia2.utils import setup_data_directory
 
 
-def setup_data_directory() -> pathlib.Path:
-    """
-    Sets up the data directory for storing Lichess game databases.
-    """
-    data_dir = pathlib.Path(__file__).parent.parent / "data"
-    if not data_dir.exists():
-        print(f"Creating directory <data> within the root directory ...")
-        data_dir.mkdir(parents=True, exist_ok=True)
-        print("Created data directory ...")
-    return data_dir
-
-
-def get_data_info(url: str) -> tuple[float, str]:
-    """
-    Retrieves the content size and type for a given Lichess database URL using a HEAD request,
-    without downloading the entire body.
-    """
+def get_lichess_database_metadata(year: int, month: int) -> dict:
+    url = f"https://database.lichess.org/standard/lichess_db_standard_rated_{year}-{month:02d}.pgn.zst"
     try:
-        response = requests.head(url, allow_redirects=True, timeout=5)
+        response: requests.Request = requests.get(url, timeout=5)
+        # response = requests.head(url, allow_redirects=True, timeout=5)
         response.raise_for_status()
-
         headers = response.headers
-
         content_type, content_length = headers.get("content-type"), headers.get("content-length")
-    
         content_length = int(content_length) if content_length is not None else 0
-        if content_length == 0:
-            print(f"Validate Lichess database URL -> '{url}'")
+        request_date, last_modified_date = headers.get("Date"), headers.get("Last-Modified")
+        status_code = response.status_code
+        domain = url.split("//")[1].split("/")[0]
+        port, ip_address = response.raw.connection.sock.getpeername() if response.raw.connection and response.raw.connection.sock else (None, None)
 
-        return content_length, content_type
+        return {
+            "url": url,
+            "server": response.headers.get('Server'),
+            "domain": domain,
+            "status_code": status_code,
+            "content_type": content_type,
+            "content_length": content_length,
+            "request_date": request_date,
+            "last_modified_date": last_modified_date,
+            "ip_address": ip_address,
+            "port": port
+        }
     except requests.exceptions.Timeout:
         print(f"TimeOutException: Request timed out for url -> {url}")
     except requests.exceptions.RequestException as e:
         print(f"An error occured while make the request to {url}: {e}")
     except ValueError as e:
         print(f"An error occured during request header manipulation: {e}")
-    return None, None
-
-
+    return {}
 
 
 def download_lichess_database(year: int, month: int) -> None:
@@ -62,13 +57,16 @@ def download_lichess_database(year: int, month: int) -> None:
     response = requests.get(url, stream=True)
     response.raise_for_status()
 
-    total_size_in_bytes = int(response.headers.get('content-length', 0))
-    server = response.headers.get('Server')
-    content_type = response.headers.get('Content-Type')
-    request_date, last_modified_date = response.headers.get("Date"), response.headers.get("Last-Modified")
-    status_code = response.status_code
-    ip_address, port = response.raw.connection.sock.getpeername()
-    domain = url.split("//")[1].split("/")[0]
+    metadata = get_lichess_database_metadata(year, month)
+    content_type = metadata.get("content_type", "unknown")
+    total_size_in_bytes = metadata.get("content_length", 0)
+    request_date = metadata.get("request_date", "unknown")
+    last_modified_date = metadata.get("last_modified_date", "unknown")
+    server = metadata.get("server", "unknown")
+    domain = metadata.get("domain", "unknown")
+    ip_address = metadata.get("ip_address", "unknown")
+    port = metadata.get("port", "unknown")
+    status_code = metadata.get("status_code", "unknown")
     block_size = 1024  # 1 Kilobyte
 
     info = (
@@ -97,16 +95,18 @@ def download_lichess_database(year: int, month: int) -> None:
 
 def download_lichess_database_buffered(year: int, month: int):
     url = f"https://database.lichess.org/standard/lichess_db_standard_rated_{year}-{month:02d}.pgn.zst"
-    expected_size, _ = get_data_info(url)
-    print(f"Expected size: {expected_size} bytes")
+    expected_size = get_lichess_database_metadata(year, month).get("content_length", 0)
 
-    # increment = 2 * 1024 * 1024 # 10 MB
-    increment = 1 * 1024 * 1024# 10 MB
+    if expected_size == 0:
+        raise ValueError(f"Expected content length is 0 for url: {url}. Cannot proceed with buffered download.")
+    
+    # print(f"Expected size: {expected_size} bytes")
+
+    increment = 2 * 1024 * 1024 # 2 MB
 
     start_byte = 0
     end_byte = start_byte + increment - 1
     
-
     while start_byte < expected_size:
         header = {"Range": f"bytes={start_byte}-{end_byte}"}
         response = requests.get(url, headers=header, stream=True)
@@ -119,71 +119,10 @@ def download_lichess_database_buffered(year: int, month: int):
         for chunk in response.iter_content(chunk_size=1024):
             if chunk:
                 buffer.extend(chunk)
-        print(f"Downloaded {len(buffer)} bytes from {start_byte} to {end_byte}")
-        yield bytes(buffer), end_byte
+        # print(f"Downloaded {len(buffer)} bytes from {start_byte} to {end_byte}")
+        bytes_downloaded = end_byte if end_byte < expected_size else expected_size
+        yield bytes(buffer), bytes_downloaded
 
         start_byte = end_byte + 1
         end_byte = start_byte + increment
-        print(f"Next range: bytes={start_byte}-{end_byte}")
-
-
-
-def process_lichess_pgn_stream(year: int, month: int):
-    download_games = download_lichess_database_buffered(year, month)
-    dp = pyzstd.EndlessZstdDecompressor()
-    previous_buffer = io.StringIO()
-    line_ref, prev_game_ref = 0, 0
-    for chunk, expect_size in download_games:
-        if dp.needs_input:
-            if not chunk:
-                if not dp.at_frame_edge:
-                    raise Exception('data ends in an incomplete frame.')
-                break
-        else:
-            chunk = b''
-        bpgn: bytes = dp.decompress(chunk)
-        current_buffer = io.StringIO(bpgn.decode('utf-8'))
-
-        if previous_buffer.getvalue():
-            combined_data = previous_buffer.getvalue() + current_buffer.getvalue()
-            print(f"Combining previous buffer of size {previous_buffer.tell()} with current buffer of size {current_buffer.tell()}")
-            print("previous buffer content:", previous_buffer.getvalue(), "...", sep="\n")
-            print("current buffer content:", current_buffer.getvalue()[:50], "...", sep="\n")
-            current_buffer = io.StringIO(combined_data)
-            print("Combined data", current_buffer.getvalue()[:3000], "...", sep="\n")
-            previous_buffer = io.StringIO()
-            break
-        count = 0
-        while True:
-            line_ref = current_buffer.tell()
-            game = chess.pgn.read_game(current_buffer)
-            # print("previous ref:", prev_game_ref, " current ref:", line_ref)
-            if game is None:
-                print(f"Previous char ref {prev_game_ref}, Current char pointer ref {current_buffer.tell()}")
-                current_buffer.seek(prev_game_ref)
-                remaining_data = current_buffer.read()
-                print(f"Storing {len(remaining_data)} bytes of remaining data for next chunk.")
-                print("---- Remaining Data Start ----"
-                      f"\n{remaining_data}\n"
-                      "---- Remaining Data End ----")
-                previous_buffer = io.StringIO(remaining_data)
-                break
-            count += 1
-            if count % 100 == 0:
-                print(game.headers["White"], "vs", game.headers["Black"])
-            # if count == 10:
-            #     break
-            prev_game_ref = line_ref
-        # break
-    
-
-
-
-
-
-if __name__ == "__main__":
-    year, month = 2020, 1
-    # download_lichess_database(year, month)
-    process_lichess_pgn_stream(year, month)
-
-
+        # print(f"Next range: bytes={start_byte}-{end_byte}")
