@@ -1,12 +1,28 @@
-import pyzstd
+
 import chess
+import pyzstd
 import torch
+import pathlib
 import re
+
+
+def setup_data_directory() -> pathlib.Path:
+    """
+    Sets up the data directory for storing Lichess game databases.
+    """
+    data_dir = pathlib.Path(__file__).parent.parent / "data"
+    if not data_dir.exists():
+        print(f"Creating directory <data> within the root directory ...")
+        data_dir.mkdir(parents=True, exist_ok=True)
+        print("Created data directory ...")
+    return data_dir
 
 
 def decompress_zstd(compressed_file_path: str, decompressed_file_path: str) -> None:
     with open(compressed_file_path, "rb") as compressed_file, open(decompressed_file_path, "wb") as decompressed_file:
         # src -> dst: source file-like object, destination file-like object
+        # TOD0: pyzstd.decompress_stream() is now deprecated, need to update to pyzstd.ZstdDecompressor().stream_reader() 
+        # and handle the streaming decompression manually
         pyzstd.decompress_stream(compressed_file, decompressed_file)
 
 
