@@ -6,6 +6,9 @@ import io
 import chess.pgn
 import pyzstd
 from maia2.utils import setup_data_directory
+from maia2.logger import get_logger
+
+log = get_logger("data")
 
 
 def get_lichess_database_metadata(year: int, month: int) -> dict:
@@ -35,11 +38,11 @@ def get_lichess_database_metadata(year: int, month: int) -> dict:
             "port": port
         }
     except requests.exceptions.Timeout:
-        print(f"TimeOutException: Request timed out for url -> {url}")
+        log.error(f"TimeOutException: Request timed out for url -> {url}")
     except requests.exceptions.RequestException as e:
-        print(f"An error occured while make the request to {url}: {e}")
+        log.error(f"An error occured while make the request to {url}: {e}")
     except ValueError as e:
-        print(f"An error occured during request header manipulation: {e}")
+        log.error(f"An error occured during request header manipulation: {e}")
     return {}
 
 
@@ -88,9 +91,9 @@ def download_lichess_database(year: int, month: int) -> None:
                 progress_bar.update(len(data))
 
     if total_size_in_bytes != 0 and progress_bar.n != total_size_in_bytes:
-        print("ERROR, something went wrong")
+        log.error("ERROR, something went wrong")
     else:
-        print(f"\nDownloaded Lichess database for {year}-{month:02d} successfully.")
+        log.info(f"\nDownloaded Lichess database for {year}-{month:02d} successfully.")
 
 
 def download_lichess_database_buffered(year: int, month: int):
@@ -100,7 +103,7 @@ def download_lichess_database_buffered(year: int, month: int):
     if expected_size == 0:
         raise ValueError(f"Expected content length is 0 for url: {url}. Cannot proceed with buffered download.")
     
-    # print(f"Expected size: {expected_size} bytes")
+    log.debug(f"Expected size: {expected_size} bytes")
 
     increment = 2 * 1024 * 1024 # 2 MB
 
@@ -113,16 +116,17 @@ def download_lichess_database_buffered(year: int, month: int):
         response.raise_for_status()
 
         if response.status_code != 206:
+            log.critical(f"Expected status code 206 for partial content, got {response.status_code} for url: {url} with header: {header}")
             raise ValueError(f"Expected status code 206 for partial content, got {response.status_code}")
         
         buffer = bytearray()
         for chunk in response.iter_content(chunk_size=1024):
             if chunk:
                 buffer.extend(chunk)
-        # print(f"Downloaded {len(buffer)} bytes from {start_byte} to {end_byte}")
+        log.debug(f"Downloaded {len(buffer)} bytes from {start_byte} to {end_byte}")
         bytes_downloaded = end_byte if end_byte < expected_size else expected_size
         yield bytes(buffer), bytes_downloaded
 
         start_byte = end_byte + 1
         end_byte = start_byte + increment
-        # print(f"Next range: bytes={start_byte}-{end_byte}")
+        log.debug(f"Next range: bytes={start_byte}-{end_byte}")
