@@ -121,9 +121,9 @@ def preprocess_pgn_game(game: chess.pgn.Game, output_file: io.FileIO, ratings_fi
             ratings_file.write(f"{white_elo}\n{black_elo}\n")
         if white_elo <= 1200 and black_elo <= 1200:
             if output_file.tell() == 0:
-                output_file.write(game.accept(chess.pgn.StringExporter(headers=True, variations=False, comments=False)))
+                output_file.write(game.accept(chess.pgn.StringExporter(headers=True, variations=False, comments=True)))
             else:
-                output_file.write("\n\n" + game.accept(chess.pgn.StringExporter(headers=True, variations=False, comments=False)))
+                output_file.write("\n\n" + game.accept(chess.pgn.StringExporter(headers=True, variations=False, comments=True)))
 
     except ValueError as e:
         print(f"ValueError while processing game with Event: {event}, WhiteElo: {white_elo}, BlackElo: {black_elo}, Result: {result}. Error: {e}")
@@ -138,6 +138,7 @@ def stream_lichess_zst(
     session: requests.Session | None = None  
 ):
     if expected_size <= 0:
+        log.error("`expected_size` must be greater than zero")
         raise RuntimeError("`expected_size` must be greater than zero")
     
     owns_session = session is None
@@ -152,6 +153,7 @@ def stream_lichess_zst(
             end_byte = start_byte + request_size - 1
             
             headers = {"Range": f"bytes={start_byte}-{end_byte}"}
+            log.info(f"Download next Range bytes={start_byte}-{end_byte}")
             
             with session.get(url, headers=headers, stream=True, timeout=60) as response:
                 if response.status_code not in (200, 206):
@@ -167,11 +169,13 @@ def stream_lichess_zst(
                     yield chunk
                 
                 if bytes_seen != request_size and response.status_code == 206:
+                    log.error(f"Partial download mismatch: expected->{request_size} got->{bytes_seen}")
                     raise RuntimeError(
                         f"Partial download mismatch: "
                         f"expected {request_size} "
                         f"got {bytes_seen}"
                     )
+            log.info(f"Downloaded data from bytes={start_byte}-{end_byte}")
             start_byte = end_byte + 1
     finally:
         if owns_session:
