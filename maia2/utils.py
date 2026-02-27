@@ -4,7 +4,22 @@ import pyzstd
 import torch
 import pathlib
 import re
+import yaml
 
+
+class Config:
+    def __init__(self, cfg_dict: dict):
+        for key, value in cfg_dict.items():
+            setattr(self, key, value)
+
+
+def parse_cfg(cfg_path: str):
+    with open(cfg_path, "r") as file:
+        cfg_dict = yaml.save_load(file)
+
+    cfg = Config(cfg_dict)
+    return cfg
+    
 
 def setup_data_directory() -> pathlib.Path:
     """
