@@ -13,8 +13,8 @@ class Config:
             setattr(self, key, value)
 
 
-def parse_cfg(cfg_path: str):
-    with open(cfg_path, "r") as file:
+def parse_cfg(cfg_file_path: str):
+    with open(cfg_file_path, "r") as file:
         cfg_dict = yaml.save_load(file)
 
     cfg = Config(cfg_dict)
