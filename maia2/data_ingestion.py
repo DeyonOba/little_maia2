@@ -1,3 +1,4 @@
+import aiohttp
 import chess.pgn
 import codecs
 import io
@@ -207,7 +208,7 @@ class PgnStreamParser:
     def __init__(self):
         self._buffer = ""
         
-    def feed(self, pgn_txt: str):
+    def feed(self, text: str):
         # Reference documentation for python-chess
         # Reference: https://python-chess.readthedocs.io/en/latest/_modules/chess/pgn.html#read_game
         """
@@ -229,26 +230,28 @@ class PgnStreamParser:
 
         Returns the parsed game or ``None`` if the end of file is reached.
         """
-        if not pgn_txt:
+        if not text:
             return []
-        
-        self._buffer += pgn_txt
+
+        self._buffer += text
         games = []
-        
+
         stream = io.StringIO(self._buffer)
-        last_good_pos = 0
-        
+        last_pos = 0
+
         while True:
             pos = stream.tell()
             game = chess.pgn.read_game(stream)
-            
+
             if game is None:
                 break
-            
-            last_good_pos = stream.tell()
+
+            last_pos = stream.tell()
             games.append(game)
-        
-        self._buffer = self._buffer[last_good_pos:]
+
+        if last_pos > 0:
+            self._buffer = self._buffer[last_pos:]
+
         return games
         
 
