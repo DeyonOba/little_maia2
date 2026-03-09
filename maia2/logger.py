@@ -4,9 +4,11 @@ import pathlib
 
 def setup_log_directory():
     log_dir_path = pathlib.Path(__file__).parent / "logs"
-    print("Creating logs directory ...")
-    log_dir_path.mkdir(parents=True, exist_ok=True)
-    print(f"Created logs directory: {log_dir_path}")
+    
+    if not log_dir_path.exists():
+        print("Creating logs directory")
+        log_dir_path.mkdir(parents=True, exist_ok=True)
+        print(f"Created logs directory: {log_dir_path}")
     return log_dir_path
 
 log_path = setup_log_directory()
