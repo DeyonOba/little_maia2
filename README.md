@@ -2,10 +2,6 @@
 
 The aim of the project is to create a light weight model for a probability chess move prediction model. The model focuses on predicting moves of lower rated players ranging from (1200 and below).
 
-Getting an existing project up and running with `uv` is a breath of fresh air compared to the old `pip` and `venv` dance. It’s incredibly fast and handles the heavy lifting of Python version management for you.
-
-Here is a clean, professional template you can drop straight into your `README.md`.
-
 ---
 
 ## Project Setup
