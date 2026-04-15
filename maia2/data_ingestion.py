@@ -59,6 +59,8 @@ def get_lichess_database_metadata(year: int, month: int) -> dict:
         log.error(f"An error occured while make the request to {url}: {e}")
     except ValueError as e:
         log.error(f"An error occured during request header manipulation: {e}")
+    except Exception as e:
+        log.error(f"An unexpected error occured: {e}")
     return {}
 
 
@@ -432,10 +434,12 @@ async def process_lichess_pgn_database(year: int, month: int):
     )
 
     meta = get_lichess_database_metadata(year, month)
+    if not meta:
+        raise RuntimeError(f"Error retrieving URL metadata: {meta}")
     expected_size = meta["content_length"]
 
     data_dir = setup_data_directory()
-    processed_data = data_dir / f"lichess_blitz_games_{year}_{month:02d}.pgn"
+    processed_data = data_dir / f"lichess_db_standard_rated_{year}-{month:02d}.pgn"
     ratings_data = data_dir / f"blitz_ratings_{year}_{month:02d}.txt"
     checkpoint_path = data_dir / f"lichess_{year}_{month:02d}.checkpoint.json"
 
@@ -471,7 +475,7 @@ async def process_lichess_pgn_database(year: int, month: int):
                       initial=resume_byte, desc=f"Processing {year}-{month:02d}".rjust(25)) as pbar
         ):
             async for pos, raw_chunk in async_parallel_stream(
-                url, expected_size, resume_byte, chunk_size=32*1024*1024
+                url, expected_size, resume_byte, chunk_size=2*MB
             ):
                 if not keep_running:
                     break
@@ -557,7 +561,7 @@ def download_lichess_database(year: int, month: int) -> None:
         )
     print(info)
 
-    with tqdm(total=total_size_in_bytes, unit='iB', unit_scale=True, colour='green') as progress_bar:
+    with tqdm.tqdm(total=total_size_in_bytes, unit='iB', unit_scale=True, colour='green') as progress_bar:
         with open(file_path, 'wb') as file:
             for data in response.iter_content(block_size):
                 file.write(data)

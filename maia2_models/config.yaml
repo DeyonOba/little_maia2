@@ -1,5 +1,6 @@
 # General Settings
-data_root: "/datadrive2/lichess_data"
+# data_root: "/datadrive2/lichess_data"
+data_root: "./lichess_data"
 seed: 42
 num_workers: 16
 verbose: 1
