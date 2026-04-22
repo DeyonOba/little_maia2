@@ -1,15 +1,18 @@
 
 import chess
 import pyzstd
+from pyzstd import EndlessZstdDecompressor, ZstdCompressor
+import shutil
 import pickle
 import torch
-import pathlib
+from pathlib import Path
 import re
 import yaml
 import time
 import os
 import numpy as np
 import random
+import io
 
 
 class Config:
@@ -24,19 +27,34 @@ def parse_cfg(cfg_file_path: str):
 
     cfg = Config(cfg_dict)
     return cfg
+
+
+def setup_project_directories(run_test: bool = False, verbose: bool = False) -> dict[str, Path]:
+    """
+    Initialize project directories before code execution or data processing
+    """
+
+    root = Path(".")
+
+    data_dir_name = "test" if run_test else "data" 
+
+    directories = {
+        "raw_data": root / data_dir_name / "raw",
+        "processed_data": root / data_dir_name / "processed",
+        "ratings_data": root / data_dir_name / "ratings_distribution",
+        "data_checkpoints": root / data_dir_name / "checkpoints",
+        "ml_checkpoints": root / "maia2_models" / "checkpoints",
+        "logs": root / "logs"
+    }
+
+    # Initializing the directories
+    for name, path in directories.items():
+        path.mkdir(parents=True, exist_ok=True)
+        if verbose:
+            print(f"Verified: {path.relative_to(root) if root in path.parents else path}", flush=True)
+
+    return directories
     
-
-def setup_data_directory() -> pathlib.Path:
-    """
-    Sets up the data directory for storing Lichess game databases.
-    """
-    data_dir = pathlib.Path(__file__).parent.parent / "lichess_data"
-    if not data_dir.exists():
-        print(f"Creating directory <data> within the root directory ...", flush=True)
-        data_dir.mkdir(parents=True, exist_ok=True)
-        print("Created data directory ...", flush=True)
-    return data_dir
-
 
 def seed_everything(seed: int):
 
@@ -91,12 +109,24 @@ def count_parameters(model):
     return readable_num(total_params)
 
 
-def decompress_zst(compressed_file_path: str, decompressed_file_path: str) -> None:
-    with open(compressed_file_path, "rb") as compressed_file, open(decompressed_file_path, "wb") as decompressed_file:
-        # src -> dst: source file-like object, destination file-like object
-        # TOD0: pyzstd.decompress_stream() is now deprecated, need to update to pyzstd.ZstdDecompressor().stream_reader() 
-        # and handle the streaming decompression manually
-        pyzstd.decompress_stream(compressed_file, decompressed_file)
+# def decompress_zst(compressed_file_path: str, decompressed_file_path: str) -> None:
+#     with open(compressed_file_path, "rb") as compressed_file, open(decompressed_file_path, "wb") as decompressed_file:
+#         # src -> dst: source file-like object, destination file-like object
+#         # TOD0: pyzstd.decompress_stream() is now deprecated, need to update to pyzstd.ZstdDecompressor().stream_reader() 
+#         # and handle the streaming decompression manually
+#         pyzstd.decompress_stream(compressed_file, decompressed_file)
+
+
+def decompress_zst(src: str, dest: str) -> None:
+    with pyzstd.open(src, "rb") as fsrc:
+        with io.open(dest, mode="wb") as fdest:
+            shutil.copyfileobj(fsrc, fdest)
+
+
+def compress_zst(src: str, dest: str) -> None:
+    with io.open(src, "rb") as fsrc:
+        with pyzstd.open(dest, "w", level_or_option=5) as fdest:
+            shutil.copyfileobj(fsrc, fdest)
 
 
 def extract_clock_time(comment: str) -> int:
@@ -122,10 +152,28 @@ def readable_time(elapsed_time: int) -> str:
     
     
 
+# def create_elo_dict():
+#     interval = 100
+#     start = 1100
+#     stop = 2000
+
+#     range_dict = {f"<{start}": 0}
+#     range_index = 1
+
+#     for lower_bound in range(start, stop, interval):
+#         upper_bound = lower_bound + interval - 1
+
+#         range_dict[f"{lower_bound}-{upper_bound}"] = range_index
+#         range_index += 1
+    
+#     range_dict[f">={stop}"] = range_index
+
+#     return range_dict
+
 def create_elo_dict():
     interval = 100
-    start = 1100
-    stop = 2000
+    start = 800
+    stop = 1200
 
     range_dict = {f"<{start}": 0}
     range_index = 1
@@ -141,9 +189,23 @@ def create_elo_dict():
     return range_dict
 
 
+# def map_to_category(elo: int, elo_dict: dict) -> int:
+#     start = 1100
+#     stop = 2000
+#     interval = 100
+
+#     if elo < start:
+#         return elo_dict[f"<{start}"]
+#     elif elo >= stop:
+#         return elo_dict[f">={stop}"]
+#     else:
+#         lower_bound = start + ((elo - start) // interval) * interval
+#         upper_bound = lower_bound + interval - 1
+#         return elo_dict[f"{lower_bound}-{upper_bound}"]
+
 def map_to_category(elo: int, elo_dict: dict) -> int:
-    start = 1100
-    stop = 2000
+    start = 800
+    stop = 1200
     interval = 100
 
     if elo < start:
@@ -282,44 +344,100 @@ def read_or_create_chunks(pgn_path, cfg):
     return pgn_chunks
 
 
-def generate_promotion_moves():
-    all_pawn_promotion_moves = []
-    white_promotion_rank, black_promotion_rank = 6, 1
+# def generate_promotion_moves():
+#     all_pawn_promotion_moves = []
+#     white_promotion_rank, black_promotion_rank = 6, 1
 
-    for file in range(8):
-        board = chess.Board(None)
-        board.set_piece_at(chess.square(file, white_promotion_rank), chess.Piece(chess.PAWN, chess.WHITE))
-        white_promotion_moves = [move.uci() for move in board.legal_moves]
-        all_pawn_promotion_moves.extend(white_promotion_moves)
+#     for file in range(8):
+#         board = chess.Board(None)
+#         board.set_piece_at(chess.square(file, white_promotion_rank), chess.Piece(chess.PAWN, chess.WHITE))
+#         white_promotion_moves = [move.uci() for move in board.legal_moves]
+#         all_pawn_promotion_moves.extend(white_promotion_moves)
 
-        board.clear_board()
-        board.turn = chess.BLACK
-        board.set_piece_at(chess.square(file, black_promotion_rank), chess.Piece(chess.PAWN, chess.BLACK))
-        black_promotion_moves = [move.uci()  for move in board.legal_moves]
-        all_pawn_promotion_moves.extend(black_promotion_moves)
+#         board.clear_board()
+#         board.turn = chess.BLACK
+#         board.set_piece_at(chess.square(file, black_promotion_rank), chess.Piece(chess.PAWN, chess.BLACK))
+#         black_promotion_moves = [move.uci()  for move in board.legal_moves]
+#         all_pawn_promotion_moves.extend(black_promotion_moves)
 
-    return all_pawn_promotion_moves
+#     return all_pawn_promotion_moves
+
+
+# def get_all_possible_moves():
+#     all_possible_piece_moves = []
+
+#     for rank in range(8):
+#         for file in range(8):
+#             board = chess.Board(None)
+#             square = chess.square(file, rank)
+#             board.set_piece_at(square, chess.Piece(chess.QUEEN, chess.WHITE))
+#             queen_moves = [move.uci() for move in board.legal_moves]
+#             all_possible_piece_moves.extend(queen_moves)
+
+#             # board.clear_board()
+#             board = chess.Board(None)
+#             board.set_piece_at(square, chess.Piece(chess.KNIGHT, chess.WHITE))
+#             knight_moves = [move.uci() for move in board.legal_moves]
+#             all_possible_piece_moves.extend(knight_moves)
+#     pawn_promotion_moves = generate_promotion_moves()
+#     return all_possible_piece_moves + pawn_promotion_moves
+
+
+def generate_pawn_promotions():
+    # Define the promotion rows for both colors and the promotion pieces
+    # promotion_rows = {'white': '7', 'black': '2'}
+    promotion_rows = {'white': '7'}
+    promotion_pieces = ['q', 'r', 'b', 'n']
+    promotions = []
+
+    # Iterate over each color
+    for color, row in promotion_rows.items():
+        # Target rows for promotion (8 for white, 1 for black)
+        target_row = '8' if color == 'white' else '1'
+
+        # Each file from 'a' to 'h'
+        for file in 'abcdefgh':
+            # Direct move to promotion
+            for piece in promotion_pieces:
+                promotions.append(f'{file}{row}{file}{target_row}{piece}')
+
+            # Capturing moves to the left and right (if not on the edges of the board)
+            if file != 'a':
+                left_file = chr(ord(file) - 1)  # File to the left
+                for piece in promotion_pieces:
+                    promotions.append(f'{file}{row}{left_file}{target_row}{piece}')
+
+            if file != 'h':
+                right_file = chr(ord(file) + 1)  # File to the right
+                for piece in promotion_pieces:
+                    promotions.append(f'{file}{row}{right_file}{target_row}{piece}')
+
+    return promotions
 
 
 def get_all_possible_moves():
-    all_possible_piece_moves = []
+    
+    all_moves = []
 
     for rank in range(8):
-        for file in range(8):
-            board = chess.Board(None)
+        for file in range(8): 
             square = chess.square(file, rank)
+            
+            board = chess.Board(None)
             board.set_piece_at(square, chess.Piece(chess.QUEEN, chess.WHITE))
-            queen_moves = [move.uci() for move in board.legal_moves]
-            all_possible_piece_moves.extend(queen_moves)
-
-            # board.clear_board()
+            legal_moves = list(board.legal_moves)
+            all_moves.extend(legal_moves)
+            
             board = chess.Board(None)
             board.set_piece_at(square, chess.Piece(chess.KNIGHT, chess.WHITE))
-            knight_moves = [move.uci() for move in board.legal_moves]
-            all_possible_piece_moves.extend(knight_moves)
-    pawn_promotion_moves = generate_promotion_moves()
-    return all_possible_piece_moves + pawn_promotion_moves
-
+            legal_moves = list(board.legal_moves)
+            all_moves.extend(legal_moves)
+    
+    all_moves = [all_moves[i].uci() for i in range(len(all_moves))]
+    
+    pawn_promotions = generate_pawn_promotions()
+    
+    return all_moves + pawn_promotions
 
 def board_to_tensor(board: chess.Board) -> torch.Tensor:
     """
