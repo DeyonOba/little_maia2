@@ -1,17 +1,20 @@
 import argparse
+import pathlib
 import os
 from multiprocessing import Process, Queue, cpu_count
 import time
 from .utils import seed_everything, readable_time, readable_num, count_parameters
 from .utils import get_all_possible_moves, create_elo_dict
-from .utils import decompress_zst, read_or_create_chunks
-from .main import MAIA2Model, preprocess_thread, train_chunks, read_monthly_data_path
+from .utils import decompress_zst, read_or_create_chunks, setup_project_directories
+from .main import MAIA2Model, preprocess_thread, train_chunks, read_monthly_data_filenames, process_chunks
+
 import torch
 import torch.nn as nn
 import pdb
 
 
 def run(cfg):
+    paths = setup_project_directories()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     print('Configurations:', flush=True)
@@ -56,42 +59,40 @@ def run(cfg):
     for epoch in range(cfg.max_epochs):
         
         print(f'Epoch {epoch + 1}', flush=True)
-        pgn_paths = read_monthly_data_path(cfg)
-        print(pgn_paths)
+        pgn_filenames = read_monthly_data_filenames(cfg)
+        print(f"Training files:")
+        
+        for idx, filename in enumerate(pgn_filenames):
+            print(f"{idx}. {filename}")
         
         num_file = 0
-        for pgn_path in pgn_paths:
-            print(f'Processing {pgn_path}', flush=True)
+        for filename in pgn_filenames:
+            print(f'Processing {filename}', flush=True)
             
             start_time = time.time()
-            decompress_zst(pgn_path + '.zst', pgn_path)
-            print(f'Decompressing {pgn_path} took {readable_time(time.time() - start_time)}', flush=True)
 
-            pgn_chunks = read_or_create_chunks(pgn_path, cfg)
-            if pgn_chunks:
-                print("PGN CHUNK CREATED ...")
-            else:
-                print("PGN CHUNK EMPTY ...")
-            print(f'Training {pgn_path} with {len(pgn_chunks)} chunks.', flush=True)
+            # Define the raw and processed data file path
+            raw_data_path = str(paths["raw_data"] / (filename + ".zst"))
+            processed_data_path = str(paths["processed_data"] / filename)
+
+            decompress_zst(raw_data_path, processed_data_path)
+            print(f'Decompressing {raw_data_path} took {readable_time(time.time() - start_time)}', flush=True)
+
+            pgn_chunks = read_or_create_chunks(processed_data_path, cfg)
+  
+            print(f'Training {str} with {len(pgn_chunks)} chunks.', flush=True)
             
             queue = Queue(maxsize=cfg.queue_length)
             
             pgn_chunks_sublists = []
-            print(f"{num_processes=}")
             for i in range(0, len(pgn_chunks), num_processes):
                 pgn_chunks_sublists.append(pgn_chunks[i:i + num_processes])
                 
-            print(f"{len(pgn_chunks)=}")
-            
-            if pgn_chunks_sublists:
-                print("PGN_CHUNKS_SUBLISTS CREATED ...")
-            else:
-                print("PGN_CHUNKS_SUBLISTS EMPTY ...")
             
             pgn_chunks_sublist = pgn_chunks_sublists[0]
             # For debugging only
-            # process_chunks(cfg, pgn_path, pgn_chunks_sublist, elo_dict)
-            worker = Process(target=preprocess_thread, args=(queue, cfg, pgn_path, pgn_chunks_sublist, elo_dict))
+            # process_chunks(cfg, processed_data_path, pgn_chunks_sublist, elo_dict)
+            worker = Process(target=preprocess_thread, args=(queue, cfg, processed_data_path, pgn_chunks_sublist, elo_dict))
             worker.start()
             
             num_chunk = 0
@@ -100,7 +101,7 @@ def run(cfg):
                 if not queue.empty():
                     if offset + 1 < len(pgn_chunks_sublists):
                         pgn_chunks_sublist = pgn_chunks_sublists[offset + 1]
-                        worker = Process(target=preprocess_thread, args=(queue, cfg, pgn_path, pgn_chunks_sublist, elo_dict))
+                        worker = Process(target=preprocess_thread, args=(queue, cfg, processed_data_path, pgn_chunks_sublist, elo_dict))
                         worker.start()
                         offset += 1
                     data, game_count, chunk_count = queue.get()
@@ -116,10 +117,10 @@ def run(cfg):
                         break
 
             num_file += 1
-            print(f'### ({num_file} / {len(pgn_paths)}) Took {readable_time(time.time() - start_time)} to train {pgn_path} with {len(pgn_chunks)} chunks.', flush=True)
-            os.remove(pgn_path)
+            print(f'### ({num_file} / {len(pgn_filenames)}) Took {readable_time(time.time() - start_time)} to train {processed_data_path} with {len(pgn_chunks)} chunks.', flush=True)
+            os.remove(processed_data_path)
             
             torch.save({'model_state_dict': model.state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
                         'accumulated_samples': accumulated_samples,
-                        'accumulated_games': accumulated_games}, f'{save_root}epoch_{epoch + 1}_{pgn_path[-11:]}.pt')
+                        'accumulated_games': accumulated_games}, f'{save_root}epoch_{epoch + 1}_{pathlib.Path(processed_data_path).name}.pt')
