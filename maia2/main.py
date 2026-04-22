@@ -7,7 +7,7 @@ from maia2.utils import board_to_tensor, get_side_info
 from einops import rearrange
 from tqdm.contrib.concurrent import process_map
 import tqdm
-from multiprocessing import Pool, Process, Queue
+from multiprocessing import Pool, Process, Queue, cpu_count
 from .utils import map_to_category, extract_clock_time, mirror_move
 
 
@@ -73,8 +73,9 @@ def process_per_game(game, white_elo, black_elo, white_win, cfg):
                 elo_oppo = white_elo
                 active_win = - white_win
 
-            if clock_info > cfg.clock_threshold:
-                ret.append((board_input, move_input, elo_self, elo_oppo, active_win))
+            # if clock_info > cfg.clock_threshold:
+            #     ret.append((board_input, move_input, elo_self, elo_oppo, active_win))
+            ret.append((board_input, move_input, elo_self, elo_oppo, active_win))
         
         board.push(move)
         if i == cfg.max_ply:
@@ -99,7 +100,7 @@ def game_filter(game):
     
     # if 'Rapid' not in event:
     #     return
-    if "Blitz" not in event or "Rapid" not in event:
+    if "Blitz" not in event:
         return
     # for _, node in enumerate(game.mainline()):
     #     if 'clk' not in node.comment:
@@ -199,7 +200,7 @@ class BasicBlock(nn.Module):
         
         self.conv1 = nn.Conv2d(in_planes, mid_planes, kernel_size=3, stride=stride, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(mid_planes)
-        self.conv2 = nn.Conv2d(mid_planes, planes, kernel_size=3, stride=1)
+        self.conv2 = nn.Conv2d(mid_planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn2 = nn.BatchNorm2d(planes)
         self.dropout = nn.Dropout(0.5)
     
@@ -375,27 +376,26 @@ class MAIA2Model(torch.nn.Module):
         return logits_maia, logits_side_info, logits_value
 
 
-def read_monthly_data_path(cfg):
+def read_monthly_data_filenames(cfg):
     
     print('Training Data:', flush=True)
-    pgn_paths = []
+    pgn_filenames = []
     
-    # for year in range(cfg.start_year, cfg.end_year + 1):
-    for year in range(2014, 2014 + 1):
+    for year in range(cfg.start_year, cfg.end_year + 1):
         start_month = cfg.start_month if year == cfg.start_year else 1
         end_month = cfg.end_month if year == cfg.end_year else 12
 
-        # for month in range(start_month, end_month + 1):
-        for month in range(3, 5):
+        for month in range(start_month, end_month + 1):
             formatted_month = f"{month:02d}"
-            pgn_path = cfg.data_root + f"/lichess_db_standard_rated_{year}-{formatted_month}.pgn"
+            # pgn_path = cfg.data_root + f"/lichess_db_standard_rated_{year}-{formatted_month}.pgn"
+            pgn_filename = f"blitz_games_{year}_{formatted_month}.pgn"
             # skip 2019-12
             if year == 2019 and month == 12:
                 continue
-            print(pgn_path, flush=True)
-            pgn_paths.append(pgn_path)
+            print(pgn_filename, flush=True)
+            pgn_filenames.append(pgn_filename)
             
-    return pgn_paths
+    return pgn_filenames
 
 
 def evaluate(model, dataloader):
@@ -428,10 +428,10 @@ def train_chunks(cfg, data, model, optimizer, all_moves_dict, criterion_maia, cr
     dataset_train = MAIA2Dataset(data, all_moves_dict, cfg)
     print(f"{len(dataset_train)=}")
     dataloader_train = torch.utils.data.DataLoader(dataset_train, 
-                                                    batch_size=cfg.batch_size, 
+                                                    batch_size=30, 
                                                     shuffle=True, 
                                                     drop_last=False,
-                                                    num_workers=cfg.num_workers)
+                                                    num_workers=cpu_count())
     if cfg.verbose:
         dataloader_train = tqdm.tqdm(dataloader_train)
     
