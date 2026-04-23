@@ -552,7 +552,7 @@ def download_games(cfg, run_test: bool = False):
                 src = paths["processed_data"] / filename
                 dest = paths["raw_data"] / (filename + ".zst")
                 if not os.path.exists(dest):
-                    asyncio.run(run_pipeline_async(year, month, 500, 1400, run_test=False))
+                    asyncio.run(run_pipeline_async(year, month, cfg.elo_lower_bond, cfg.elo_upper_bound, run_test=False))
                     compress_zst(str(src), str(dest))
                     os.remove(src)
             except Exception as e:
