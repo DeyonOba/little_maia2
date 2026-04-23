@@ -1,6 +1,7 @@
 # General Settings
 # data_root: "/datadrive2/lichess_data"
-data_root: "./lichess_data"
+data_root: "./data"
+test_data_root: "./test"
 seed: 42
 num_workers: 16
 verbose: 1
@@ -8,10 +9,15 @@ max_epochs: 3
 max_ply: 300
 clock_threshold: 30
 chunk_size: 20000
-start_year: 2018
+# start_year: 2018
+start_year: 2013
 start_month: 5
-end_year: 2023
-end_month: 11
+# end_year: 2023
+end_year: 2013
+# end_month: 11
+end_month: 12
+elo_upper_bound: 1200
+elo_lower_bound: 400
 from_checkpoint: false
 checkpoint_epoch: 0
 checkpoint_year: 2018
