@@ -6,11 +6,15 @@ import time
 from .utils import seed_everything, readable_time, readable_num, count_parameters
 from .utils import get_all_possible_moves, create_elo_dict
 from .utils import decompress_zst, read_or_create_chunks, setup_project_directories
+from .logger import get_logger
 from .main import MAIA2Model, preprocess_thread, train_chunks, read_monthly_data_filenames, process_chunks
 
 import torch
 import torch.nn as nn
 import pdb
+
+
+log = get_logger("training")
 
 
 def run(cfg):
@@ -24,7 +28,9 @@ def run(cfg):
     # num_processes = cpu_count() - cfg.num_cpu_left
     num_processes = cpu_count() // 2
 
-    save_root = f'./saves/{cfg.lr}_{cfg.batch_size}_{cfg.wd}/'
+    checkpoint_info = f'{cfg.lr}_{cfg.batch_size}_{cfg.wd}_{cfg.start_year}-{cfg.start_month:02d}_{cfg.end_year}-{cfg.end_month:02d}'
+    save_root = paths["ml_checkpoints"] / checkpoint_info
+
     if not os.path.exists(save_root):
         os.makedirs(save_root)
 
@@ -43,14 +49,15 @@ def run(cfg):
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.wd)
     N_params = count_parameters(model)
-    print(f'Trainable Parameters: {N_params}', flush=True)
+    log.info(f'Trainable Parameters: {N_params}')
 
     accumulated_samples = 0
     accumulated_games = 0
 
     if cfg.from_checkpoint:
+        log.info(f"Loading checkpoint from epoch {cfg.checkpoint_epoch} of {cfg.checkpoint_year}-{cfg.checkpoint_month:02d}")
         formatted_month = f"{cfg.checkpoint_month:02d}"
-        checkpoint = torch.load(save_root + f'epoch_{cfg.checkpoint_epoch}_{cfg.checkpoint_year}-{formatted_month}.pgn.pt')
+        checkpoint = torch.load(save_root / f'epoch_{cfg.checkpoint_epoch}_{cfg.checkpoint_year}-{formatted_month}.pgn.pt')
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         accumulated_samples = checkpoint['accumulated_samples']
@@ -58,16 +65,12 @@ def run(cfg):
 
     for epoch in range(cfg.max_epochs):
         
-        print(f'Epoch {epoch + 1}', flush=True)
+        log.info(f'Epoch {epoch + 1}')
         pgn_filenames = read_monthly_data_filenames(cfg)
-        print(f"Training files:")
-        
-        for idx, filename in enumerate(pgn_filenames):
-            print(f"{idx}. {filename}")
         
         num_file = 0
         for filename in pgn_filenames:
-            print(f'Processing {filename}', flush=True)
+            log.info(f'Processing {filename}')
             
             start_time = time.time()
 
@@ -76,11 +79,9 @@ def run(cfg):
             processed_data_path = str(paths["processed_data"] / filename)
 
             decompress_zst(raw_data_path, processed_data_path)
-            print(f'Decompressing {raw_data_path} took {readable_time(time.time() - start_time)}', flush=True)
+            log.info(f'Decompressing {raw_data_path} took {readable_time(time.time() - start_time)}')
 
             pgn_chunks = read_or_create_chunks(processed_data_path, cfg)
-  
-            print(f'Training {str} with {len(pgn_chunks)} chunks.', flush=True)
             
             queue = Queue(maxsize=cfg.queue_length)
             
@@ -109,18 +110,23 @@ def run(cfg):
                     num_chunk += chunk_count
                     accumulated_samples += len(data)
                     accumulated_games += game_count
-                    print(f'[{num_chunk}/{len(pgn_chunks)}]', flush=True)
-                    print(f'[# Positions]: {readable_num(accumulated_samples)}', flush=True)
-                    print(f'[# Games]: {readable_num(accumulated_games)}', flush=True)
-                    print(f'[# Loss]: {loss} | [# Loss MAIA]: {loss_maia} | [# Loss Side Info]: {loss_side_info} | [# Loss Value]: {loss_value}', flush=True)
+                    log.info(
+                        f'\n[{num_chunk}/{len(pgn_chunks)}]\n'
+                        f'[# Positions]: {readable_num(accumulated_samples)}\n'
+                        f'[# Games]: {readable_num(accumulated_games)}\n'
+                        f'[# Loss]: {loss}\n'
+                        f'[# Loss MAIA]: {loss_maia}\n'
+                        f'[# Loss Side Info]: {loss_side_info}\n'
+                        f'[# Loss Value]: {loss_value}\n'
+                    )
                     if num_chunk == len(pgn_chunks):
                         break
 
             num_file += 1
-            print(f'### ({num_file} / {len(pgn_filenames)}) Took {readable_time(time.time() - start_time)} to train {processed_data_path} with {len(pgn_chunks)} chunks.', flush=True)
+            log.info(f'### ({num_file} / {len(pgn_filenames)}) Took {readable_time(time.time() - start_time)} to train {processed_data_path} with {len(pgn_chunks)} chunks.')
             os.remove(processed_data_path)
             
             torch.save({'model_state_dict': model.state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
                         'accumulated_samples': accumulated_samples,
-                        'accumulated_games': accumulated_games}, f'{save_root}epoch_{epoch + 1}_{pathlib.Path(processed_data_path).name}.pt')
+                        'accumulated_games': accumulated_games}, save_root.joinpath(f'epoch_{epoch + 1}_{pathlib.Path(processed_data_path).name}.pt'))
