@@ -13,11 +13,14 @@ LOGGING_CONFIG = {
         'standard': {
             'format': '%(asctime)s [%(levelname)s] %(name)s: %(message)s' 
         },
+        "console": {
+            "format": "$(message)s"
+        }
     },
     'handlers': {
         'console': {
             'class': 'logging.StreamHandler', #
-            'formatter': 'standard',
+            'formatter': 'console',
         },
         "data_file": {
             "class": "logging.handlers.RotatingFileHandler",
