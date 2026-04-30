@@ -172,8 +172,8 @@ def readable_time(elapsed_time: int) -> str:
 
 def create_elo_dict():
     interval = 100
-    start = 800
-    stop = 1200
+    start = 500
+    stop = 1100
 
     range_dict = {f"<{start}": 0}
     range_index = 1
@@ -204,8 +204,8 @@ def create_elo_dict():
 #         return elo_dict[f"{lower_bound}-{upper_bound}"]
 
 def map_to_category(elo: int, elo_dict: dict) -> int:
-    start = 800
-    stop = 1200
+    start = 500
+    stop = 1100
     interval = 100
 
     if elo < start:
