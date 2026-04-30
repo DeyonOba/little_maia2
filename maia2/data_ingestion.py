@@ -29,7 +29,7 @@ TAG_RE = re.compile(r'\[(WhiteElo|BlackElo|Event|TimeControl)\s+"([^"]+)"\]')
 # Boundary: Splits strictly at the start of a new PGN block
 GAME_BOUNDARY = re.compile(r'\n(?=\[Event )')
 ELO_PATTERN = re.compile(r'\[WhiteElo "(\d+)"\]\s*\[BlackElo "(\d+)"\]')
-MAX_CHUNK_SIZE = 30 * MB  # Absolute upper limit to prevent OOM, can be adjusted based on testing
+MAX_CHUNK_SIZE = 50 * MB  # Absolute upper limit to prevent OOM, can be adjusted based on testing
 
 PATHS = setup_project_directories(verbose=True)
 
@@ -552,7 +552,7 @@ def download_games(cfg, run_test: bool = False):
                 src = paths["processed_data"] / filename
                 dest = paths["raw_data"] / (filename + ".zst")
                 if not os.path.exists(dest):
-                    asyncio.run(run_pipeline_async(year, month, cfg.elo_lower_bond, cfg.elo_upper_bound, run_test=False))
+                    asyncio.run(run_pipeline_async(year, month, cfg.elo_lower_bound, cfg.elo_upper_bound, run_test=False))
                     compress_zst(str(src), str(dest))
                     os.remove(src)
             except Exception as e:
