@@ -96,8 +96,3 @@ def from_pretrained(time_control_format: Literal["blitz", "rapid"], device: Lite
     print(f"Model for {time_control_format} games loaded to {device}.")
     
     return model
-
-
-
-    
-
