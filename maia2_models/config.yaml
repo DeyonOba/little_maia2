@@ -18,6 +18,15 @@ end_year: 2013
 end_month: 12
 elo_upper_bound: 1200
 elo_lower_bound: 400
+
+# Async downloader (politeness to lichess.org)
+download_workers: 4
+max_concurrent_requests: 4
+request_timeout_seconds: 60
+download_max_retries: 3
+download_max_throttle_retries: 10
+month_failure_backoff_seconds: 30
+
 from_checkpoint: false
 checkpoint_epoch: 0
 checkpoint_year: 2018
