@@ -50,12 +50,12 @@ def dynamic_chunk_size(num_workers: int, safety_factor: float = 0.2) -> int:
     return max(CHUNK_FLOOR, min(budget, MAX_CHUNK_SIZE))
 
 
-def get_url_content_info(url: str) -> tuple[int, str]:
+def get_url_content_info(url: str) -> dict:
     """
     Retrieves the content size and type for a given URL using a HEAD request, without downloading the entire body.
     """
     try:
-        response: requests.Request = requests.get(url, timeout=5)
+        response: requests.Response = requests.head(url, timeout=10, allow_redirects=True)
         response.raise_for_status()
         headers = response.headers
         content_type, content_length = headers.get("content-type"), headers.get("content-length")
@@ -63,7 +63,15 @@ def get_url_content_info(url: str) -> tuple[int, str]:
         request_date, last_modified_date = headers.get("Date"), headers.get("Last-Modified")
         status_code = response.status_code
         domain = url.split("//")[1].split("/")[0]
-        port, ip_address = response.raw.connection.sock.getpeername() if response.raw.connection and response.raw.connection.sock else (None, None)
+
+        try:
+            port, ip_address = (
+                response.raw.connection.sock.getpeername()
+                if response.raw is not None and response.raw.connection and response.raw.connection.sock
+                else (None, None)
+            )
+        except Exception:
+            port, ip_address = (None, None)
 
         return {
             "url": url,
@@ -244,20 +252,21 @@ class ParallelPgnProcessor:
     def __init__(self, workers=None):
         self.executor = ProcessPoolExecutor(max_workers=workers or mp.cpu_count())
         self._leftover = ""
+        self._closed = False
 
     async def process_text(self, text: str, from_rating: int, to_rating: int):
         full_text = self._leftover + text
-        
+
         # Find the last boundary to keep data integrity
         parts = GAME_BOUNDARY.split(full_text)
-        
+
         if len(parts) < 2:
             self._leftover = full_text
             return []
 
         # The last part is incomplete, save it for the next feed
         self._leftover = parts.pop()
-        
+
         # Offload the list of strings to the process pool
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self.executor, self._worker_batch, parts, from_rating, to_rating)
@@ -266,6 +275,22 @@ class ParallelPgnProcessor:
     def _worker_batch(game_list, from_rating=1500, to_rating=1550):
         # This runs in a separate process
         return [g for g in game_list if fast_filter_pgn_games(g, from_rating, to_rating)]
+
+    def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self.executor.shutdown(wait=True, cancel_futures=True)
+        except Exception as e:
+            log.warning(f"ParallelPgnProcessor shutdown encountered: {e!r}")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+        return False
     
 class PgnStreamParser:
     def __init__(self, skip_until_count: int = 0):
@@ -332,88 +357,210 @@ async def async_parallel_stream(
     start_byte: int = 0,
     expected_sha256: str = None,
     chunk_size: int = 4 * MB,
-    workers: int = 6,
-    max_retries: int = 3
+    workers: int = 4,
+    max_retries: int = 3,
+    *,
+    max_concurrent: int | None = None,
+    request_timeout: float = 60.0,
+    max_throttle_retries: int = 10,
 ):
-    connector = aiohttp.TCPConnector(limit=workers * 2)
-    stop_event = asyncio.Event()
+    if max_concurrent is None:
+        max_concurrent = workers
+
+    connector = aiohttp.TCPConnector(limit=max_concurrent + 2, enable_cleanup_closed=True)
+    timeout = aiohttp.ClientTimeout(
+        total=request_timeout,
+        sock_connect=15,
+        sock_read=request_timeout,
+    )
     sha256_hash = hashlib.sha256()
-    
+    request_semaphore = asyncio.Semaphore(max_concurrent)
+
+    # Shared adaptive delay (siblings cool off after a 429)
+    adaptive = {"delay": 0.0}
+
     pbar = tqdm.tqdm(
         total=expected_size - start_byte,
         unit="B",
         unit_scale=True,
         desc="Downloading & Hashing".rjust(25),
-        leave=True
+        leave=True,
     )
-    
-    async with aiohttp.ClientSession(connector=connector) as session:
-        queue = asyncio.PriorityQueue(maxsize=workers * 2)
-        range_gen = plan_request_ranges(start_byte, expected_size, chunk_size)
-        expected_pos = start_byte
-        
-        async def fetch_worker(worker_id):
-            for start, end in range_gen:
-                if stop_event.is_set():
-                    break
-                
-                for attempt in range(max_retries + 1):
-                    if stop_event.is_set():
-                        return
-                    
-                    try:
-                        headers = {"Range": f"bytes={start}-{end}"}
-                        
-                        async with session.get(url, headers=headers, timeout=30) as response:
-                            if response.status not in (200, 206):
-                                raise RuntimeError(f"Error: HTTP {response.status}")
 
-                            data = await response.read()
-                            await queue.put((start, data))
-                            break 
-                    except (aiohttp.TimeoutError, aiohttp.ClientError):
-                        if attempt == max_retries:
-                            stop_event.set()
-                            return
-                        
-                        wait = (2 ** attempt) + random.uniform(0, 1)
-                        pbar.set_postfix_str(f"Retry W-{worker_id} in {wait:.1f}s")
-                        await asyncio.sleep(wait)
-                        
+    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+        queue: asyncio.Queue = asyncio.Queue(maxsize=max(workers * 2, 4))
+        work_queue: asyncio.Queue = asyncio.Queue()
+
+        # Pre-populate every (start, end) tuple
+        ranges = list(plan_request_ranges(start_byte, expected_size, chunk_size))
+        for r in ranges:
+            work_queue.put_nowait(r)
+        for _ in range(workers):
+            work_queue.put_nowait(None)  # sentinel
+
+        loop = asyncio.get_running_loop()
+        download_failure: asyncio.Future = loop.create_future()
+        expected_pos = start_byte
+
+        async def _fetch_chunk(worker_id: int, start: int, end: int) -> bool:
+            """Fetch a single byte-range. Returns True on success, False on fatal failure."""
+            attempt = 0
+            throttle_attempts = 0
+
+            while True:
+                # Honour any adaptive delay accumulated by sibling 429s
+                if adaptive["delay"] > 0:
+                    await asyncio.sleep(adaptive["delay"])
+
+                try:
+                    headers = {"Range": f"bytes={start}-{end}"}
+                    async with request_semaphore:
+                        async with session.get(url, headers=headers) as response:
+                            status = response.status
+
+                            if status in (200, 206):
+                                data = await response.read()
+                                await queue.put((start, data))
+                                # Decay the adaptive delay on success
+                                adaptive["delay"] = max(0.0, adaptive["delay"] * 0.5)
+                                return True
+
+                            if status == 429:
+                                throttle_attempts += 1
+                                if throttle_attempts > max_throttle_retries:
+                                    log.error(
+                                        f"W-{worker_id} exhausted throttle retries "
+                                        f"({max_throttle_retries}) for range {start}-{end}"
+                                    )
+                                    return False
+
+                                retry_after_hdr = response.headers.get("Retry-After")
+                                try:
+                                    retry_after = float(retry_after_hdr) if retry_after_hdr else 30.0
+                                except ValueError:
+                                    retry_after = 30.0
+
+                                sleep_for = min(retry_after, 120.0) + random.uniform(0, 1.0)
+                                # Bump shared adaptive delay so siblings slow down
+                                adaptive["delay"] = min(
+                                    max(adaptive["delay"], retry_after * 0.25),
+                                    10.0,
+                                )
+                                log.warning(
+                                    f"W-{worker_id} got 429 for {start}-{end}; "
+                                    f"sleeping {sleep_for:.1f}s "
+                                    f"(throttle attempt {throttle_attempts}/{max_throttle_retries})"
+                                )
+                                pbar.set_postfix_str(f"429 W-{worker_id} {sleep_for:.0f}s")
+                                await asyncio.sleep(sleep_for)
+                                continue
+
+                            # Other non-2xx -> exponential backoff like a transient client error
+                            raise RuntimeError(f"HTTP {status}")
+
+                except (aiohttp.ClientError, asyncio.TimeoutError, RuntimeError) as e:
+                    if attempt >= max_retries:
+                        log.error(
+                            f"W-{worker_id} fatal failure for range {start}-{end} "
+                            f"after {max_retries} retries: {e!r}"
+                        )
+                        return False
+
+                    wait = (2 ** attempt) + random.uniform(0, 1)
+                    log.warning(
+                        f"W-{worker_id} error for {start}-{end} "
+                        f"(attempt {attempt + 1}/{max_retries}): {e!r}; "
+                        f"retrying in {wait:.1f}s"
+                    )
+                    pbar.set_postfix_str(f"Retry W-{worker_id} in {wait:.1f}s")
+                    await asyncio.sleep(wait)
+                    attempt += 1
+
+        async def fetch_worker(worker_id: int):
+            while True:
+                item = await work_queue.get()
+                try:
+                    if item is None:
+                        return
+                    start, end = item
+                    ok = await _fetch_chunk(worker_id, start, end)
+                    if not ok:
+                        if not download_failure.done():
+                            download_failure.set_exception(
+                                RuntimeError(
+                                    f"W-{worker_id} could not fetch range {start}-{end}"
+                                )
+                            )
+                        return
+                finally:
+                    work_queue.task_done()
+
         worker_tasks = [
             asyncio.create_task(fetch_worker(worker_id=i), name=f"W-{i}")
             for i in range(workers)
         ]
         heap = []
-        
+
+        # Track normal completion (all work drained AND all workers exited)
+        completion_task = asyncio.create_task(work_queue.join(), name="work-drain")
+
         try:
             while expected_pos < expected_size:
-                workers_done = all(t.done() for t in worker_tasks)
-                if workers_done and queue.empty() and not heap:
-                    break
-                
-                try:
-                    start, data = await asyncio.wait_for(queue.get(), timeout=0.2)
+                queue_get_task = asyncio.create_task(queue.get(), name="queue-get")
+                done, _pending = await asyncio.wait(
+                    {queue_get_task, completion_task, download_failure},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+
+                if download_failure in done:
+                    queue_get_task.cancel()
+                    # Surface the worker's exception
+                    raise download_failure.exception()
+
+                if queue_get_task in done:
+                    start, data = queue_get_task.result()
                     heapq.heappush(heap, (start, data))
-                except asyncio.TimeoutError:
-                    continue
-            
+                else:
+                    queue_get_task.cancel()
+
+                # Drain anything else already buffered in the queue. Important when
+                # completion_task fires before queue_get_task even though the queue
+                # still has items — we'd otherwise lose those buffered chunks.
+                while True:
+                    try:
+                        s2, d2 = queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                    heapq.heappush(heap, (s2, d2))
+
+                # Drain the priority heap in order
                 while heap and heap[0][0] == expected_pos:
                     s, chunk = heapq.heappop(heap)
-                    
+
                     if expected_pos + len(chunk) > expected_size:
-                        chunk = chunk[:expected_size - expected_pos]
-                    
+                        chunk = chunk[: expected_size - expected_pos]
+
                     sha256_hash.update(chunk)
                     yield s, chunk
-                        
+
                     expected_pos += len(chunk)
                     pbar.update(len(chunk))
-                    
+
                     if expected_pos >= expected_size:
-                        stop_event.set()
                         break
-            
+
+                # If workers are done, nothing in flight, and we still haven't
+                # reached expected_size — there's an unrecoverable hole.
+                if (
+                    completion_task.done()
+                    and queue.empty()
+                    and expected_pos < expected_size
+                ):
+                    raise RuntimeError(
+                        f"Workers exited before completing download "
+                        f"(at {expected_pos}/{expected_size}, heap_size={len(heap)})"
+                    )
+
             if expected_sha256:
                 actual_hash = sha256_hash.hexdigest()
                 if expected_sha256.lower() == actual_hash:
@@ -422,21 +569,30 @@ async def async_parallel_stream(
                     raise ValueError("Hash Mismatch!")
         finally:
             pbar.close()
-            stop_event.set()
+            if not completion_task.done():
+                completion_task.cancel()
             for t in worker_tasks:
                 if not t.done():
                     t.cancel()
-            await asyncio.gather(*worker_tasks, return_exceptions=True)
+            await asyncio.gather(completion_task, *worker_tasks, return_exceptions=True)
 
 
-async def run_pipeline_async(year: int, month: int, from_rating: int = 1500, to_rating: int = 1550, run_test: bool = False):
+async def run_pipeline_async(
+    year: int,
+    month: int,
+    from_rating: int = 1500,
+    to_rating: int = 1550,
+    run_test: bool = False,
+    *,
+    cfg=None,
+):
     url = f"https://database.lichess.org/standard/lichess_db_standard_rated_{year}-{month:02d}.pgn.zst"
 
-    metadata= get_url_content_info(url)
+    metadata = get_url_content_info(url)
     expected_size = metadata.get("content_length")
 
-    if expected_size is None:
-        print("Unable to retrieve URL content info. Aborting.", flush=True)
+    if not expected_size:
+        log.error(f"Unable to retrieve URL content info for {url}. Aborting.")
         return
 
     paths = setup_project_directories(run_test=True) if run_test else PATHS
@@ -446,117 +602,216 @@ async def run_pipeline_async(year: int, month: int, from_rating: int = 1500, to_
 
     checkpoint = DownloadCheckpoint(checkpoint_path, processed_data)
     resume_byte = checkpoint.last_sync_point if checkpoint.last_sync_point > 0 else 0
-    
+
     # If it's a fresh start (resume_byte == 0), the file will just be created.
     file_mode = "a" if resume_byte > 0 else "w"
 
-    # Budget per worker can be adjusted based on available RAM and number of workers
-    num_workers = mp.cpu_count()
-    chunk_size = dynamic_chunk_size(num_workers)
-    print(f"Using chunk size of {chunk_size // MB} MB with {num_workers} workers (RAM budget: {get_available_ram() // MB} MB)", flush=True)
-    
-    processor = ParallelPgnProcessor(num_workers)
+    # CPU pool size for the game-filter stage stays generous; download fan-out is independent.
+    cpu_workers = mp.cpu_count()
+    chunk_size = dynamic_chunk_size(cpu_workers)
+
+    download_workers = getattr(cfg, "download_workers", 4) if cfg is not None else 4
+    max_concurrent = getattr(cfg, "max_concurrent_requests", download_workers) if cfg is not None else download_workers
+    request_timeout = getattr(cfg, "request_timeout_seconds", 60.0) if cfg is not None else 60.0
+    max_retries = getattr(cfg, "download_max_retries", 3) if cfg is not None else 3
+    max_throttle_retries = getattr(cfg, "download_max_throttle_retries", 10) if cfg is not None else 10
+
+    log.info(
+        f"Pipeline {year}-{month:02d}: chunk={chunk_size // MB} MB, "
+        f"cpu_workers={cpu_workers}, download_workers={download_workers}, "
+        f"max_concurrent={max_concurrent}, RAM budget={get_available_ram() // MB} MB"
+    )
+
+    processor = ParallelPgnProcessor(cpu_workers)
     # If resuming, tell the parser how many games to ignore to avoid duplicates
     parser = PgnStreamParser(skip_until_count=checkpoint.state["processed_games"])
     zstream = ZstdUtf8Stream()
 
-    
-    # Variable to track if we should shut down gracefully
-    keep_running = True
+    shutdown_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
 
-    def handle_exit(sig, frame):
-        nonlocal keep_running
-        print("\nShutdown signal received. Finishing current chunk and saving...", flush=True)
-        keep_running = False
+    def _request_shutdown():
+        if not shutdown_event.is_set():
+            log.warning(f"Shutdown signal received during {year}-{month:02d}. Draining current chunk.")
+            shutdown_event.set()
 
-    # Attach signal listeners for Ctrl+C (SIGINT) and Kill (SIGTERM)
-    signal.signal(signal.SIGINT, handle_exit)
-    signal.signal(signal.SIGTERM, handle_exit)
+    installed_signals = []
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, _request_shutdown)
+            installed_signals.append(sig)
+        except (NotImplementedError, RuntimeError):
+            # add_signal_handler is unsupported on some platforms (e.g. Windows)
+            pass
 
     try:
         with (
+            processor,
             open(processed_data, file_mode, encoding="utf-8") as out,
             open(ratings_data, file_mode, encoding="utf-8") as ratings_out,
-            tqdm.tqdm(total=expected_size, unit="B", unit_scale=True, colour="green",
-                      initial=resume_byte, desc=f"Processing {year}-{month:02d}".rjust(25)) as pbar
+            tqdm.tqdm(
+                total=expected_size,
+                unit="B",
+                unit_scale=True,
+                colour="green",
+                initial=resume_byte,
+                desc=f"Processing {year}-{month:02d}".rjust(25),
+            ) as pbar,
         ):
             if ratings_out.tell() == 0:
                 ratings_out.write("WhiteElo,BlackElo\n")
                 ratings_out.flush()
-            
-            async for pos, raw_chunk in async_parallel_stream(
-                url, expected_size, resume_byte, chunk_size=chunk_size, workers=num_workers
-            ):
-                if not keep_running:
-                    sys.exit(1)
-                
+
+            interrupted = False
+
+            stream = async_parallel_stream(
+                url,
+                expected_size,
+                resume_byte,
+                chunk_size=chunk_size,
+                workers=download_workers,
+                max_retries=max_retries,
+                max_concurrent=max_concurrent,
+                request_timeout=request_timeout,
+                max_throttle_retries=max_throttle_retries,
+            )
+
+            async for pos, raw_chunk in stream:
+                if shutdown_event.is_set():
+                    interrupted = True
+                    break
+
                 # Update rolling hash first
                 checkpoint.update_hash(raw_chunk)
-                
+
                 # Decompress
                 text_data = zstream.feed(raw_chunk)
                 is_sync = zstream.just_synced()
-                
+
                 # Parse with Fast-Forward (removes duplicates from the overlap)
                 games_to_process = parser.feed(text_data)
-                
+
                 # Filter & Write
                 if games_to_process:
-                    valid_games = await processor.process_text("\n\n".join(games_to_process), from_rating, to_rating)
+                    valid_games = await processor.process_text(
+                        "\n\n".join(games_to_process), from_rating, to_rating
+                    )
                     if valid_games:
                         valid_games_str = "\n\n".join(valid_games) + "\n\n"
                         out.write(valid_games_str)
                         out.flush()
-                        ratings_out.write("\n".join([f"{white},{black}" for white, black in ELO_PATTERN.findall(valid_games_str)]) + "\n")
+                        ratings_out.write(
+                            "\n".join(
+                                [f"{white},{black}" for white, black in ELO_PATTERN.findall(valid_games_str)]
+                            )
+                            + "\n"
+                        )
                         ratings_out.flush()
 
                 # Commit state
                 checkpoint.commit(
                     next_byte=pos + len(raw_chunk),
                     games_count=parser.total_seen,
-                    is_sync_point=is_sync
+                    is_sync_point=is_sync,
                 )
-                
+
                 pbar.update(len(raw_chunk))
 
-            # Final Flush
-            if keep_running:
+            # Final flush only on a clean walk-through (no SIGINT mid-stream)
+            if not interrupted:
                 final_text = zstream.flush()
                 valid_games = await processor.process_text(final_text, from_rating, to_rating)
                 if valid_games:
-                    with open(processed_data, "a", encoding="utf-8") as out:
-                        valid_games_str = "\n\n".join(valid_games) + "\n\n"
-                        out.write(valid_games_str)
-                        out.flush()
-                        ratings_out.write("\n".join([f"{white},{black}" for white, black in ELO_PATTERN.findall(valid_games_str)]) + "\n")
-                        ratings_out.flush()
+                    valid_games_str = "\n\n".join(valid_games) + "\n\n"
+                    out.write(valid_games_str)
+                    out.flush()
+                    ratings_out.write(
+                        "\n".join(
+                            [f"{white},{black}" for white, black in ELO_PATTERN.findall(valid_games_str)]
+                        )
+                        + "\n"
+                    )
+                    ratings_out.flush()
 
                 checkpoint.commit(next_byte=expected_size, complete=True)
 
+            if interrupted:
+                # Idempotent emergency commit; preserves last_sync_point
+                checkpoint.commit(next_byte=checkpoint.next_byte, complete=False)
+                raise KeyboardInterrupt(f"Shutdown during {year}-{month:02d}")
+
+    except KeyboardInterrupt:
+        raise
     except Exception as e:
-        print(f"An error occurred: {e}")
+        log.error(f"run_pipeline_async error for {year}-{month:02d}: {e!r}")
         # Final emergency checkpoint save
         checkpoint.commit(next_byte=checkpoint.next_byte, complete=False)
         raise
+    finally:
+        for sig in installed_signals:
+            try:
+                loop.remove_signal_handler(sig)
+            except (NotImplementedError, RuntimeError):
+                pass
 
 
 def download_games(cfg, run_test: bool = False):
+    import time
+    import traceback
+
+    failure_backoff = getattr(cfg, "month_failure_backoff_seconds", 30)
+    failure_count = 0
+
     for year in range(cfg.start_year, cfg.end_year + 1):
         start_month = cfg.start_month if year == cfg.start_year else 1
         end_month = cfg.end_month if year == cfg.end_year else 12
 
         for month in range(start_month, end_month + 1):
-            try: 
-                filename = f"blitz_games_{year}_{month:02d}.pgn"
-                paths = setup_project_directories(run_test) if run_test else PATHS
-                src = paths["processed_data"] / filename
-                dest = paths["raw_data"] / (filename + ".zst")
-                if not os.path.exists(dest):
-                    asyncio.run(run_pipeline_async(year, month, cfg.elo_lower_bound, cfg.elo_upper_bound, run_test=False))
+            filename = f"blitz_games_{year}_{month:02d}.pgn"
+            paths = setup_project_directories(run_test) if run_test else PATHS
+            src = paths["processed_data"] / filename
+            dest = paths["raw_data"] / (filename + ".zst")
+
+            if os.path.exists(dest):
+                log.info(f"Skipping {year}-{month:02d}: {dest} already exists.")
+                continue
+
+            log.info(f"Starting download for {year}-{month:02d}")
+            t0 = time.monotonic()
+            try:
+                asyncio.run(
+                    run_pipeline_async(
+                        year,
+                        month,
+                        cfg.elo_lower_bound,
+                        cfg.elo_upper_bound,
+                        run_test=run_test,
+                        cfg=cfg,
+                    )
+                )
+                if os.path.exists(src):
                     compress_zst(str(src), str(dest))
                     os.remove(src)
+                log.info(
+                    f"Completed {year}-{month:02d} in {time.monotonic() - t0:.1f}s"
+                )
+                failure_count = 0
+            except KeyboardInterrupt:
+                log.warning(
+                    f"Interrupted during {year}-{month:02d}; checkpoint preserved."
+                )
+                raise
             except Exception as e:
-                log.error(f"Could not download the data for {year}-{month:02d}:\n{e.__class__.__name__}:{e}")
+                failure_count += 1
+                log.error(
+                    f"Failed {year}-{month:02d}: {e!r}\n{traceback.format_exc()}"
+                )
+                sleep_for = min(failure_backoff * failure_count, 300)
+                log.info(
+                    f"Backing off {sleep_for}s before next month (failure #{failure_count})."
+                )
+                time.sleep(sleep_for)
+                continue
         
 
 def download_lichess_database(year: int, month: int) -> None:
