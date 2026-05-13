@@ -36,7 +36,7 @@ def setup_project_directories(run_test: bool = False, verbose: bool = False) -> 
 
     root = Path(".")
 
-    data_dir_name = "test" if run_test else "data" 
+    data_dir_name = "test_data" if run_test else "maia2_data" 
 
     directories = {
         "raw_data": root / data_dir_name / "raw",
@@ -48,7 +48,7 @@ def setup_project_directories(run_test: bool = False, verbose: bool = False) -> 
     }
 
     # Initializing the directories
-    for name, path in directories.items():
+    for _, path in directories.items():
         path.mkdir(parents=True, exist_ok=True)
         if verbose:
             print(f"Verified: {path.relative_to(root) if root in path.parents else path}", flush=True)
