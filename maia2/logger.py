@@ -8,13 +8,17 @@ log_path = setup_project_directories()["logs"]
 
 LOGGING_CONFIG = {
     'version': 1,
-    'disable_existing_loggers': True, # Keep existing loggers
+    'disable_existing_loggers': False,
+    'root': {
+        'handlers': ['file'],
+        'level': 'DEBUG',
+    },
     'formatters': {
         'standard': {
             'format': '%(asctime)s [%(levelname)s] %(name)s: %(message)s' 
         },
         "console": {
-            "format": "$(message)s"
+            "format": "%(message)s"
         }
     },
     'handlers': {
