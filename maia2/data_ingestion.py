@@ -19,17 +19,21 @@ import random
 from .utils import setup_project_directories, compress_zst
 from .logger import get_logger
 import sys
+import time
+from urllib.parse import urlparse
+from typing import Dict, Any
 
 MB: int = 1024 * 1024
 log = get_logger("data")
 
 # Optimized Regex patterns
 # Captures: [WhiteElo "1200"] -> Groups: WhiteElo, 1200
-TAG_RE = re.compile(r'\[(WhiteElo|BlackElo|Event|TimeControl)\s+"([^"]+)"\]')
+TAG_RE = re.compile(r'\[(WhiteElo|BlackElo|Event|TimeControl|WhiteTitle|BlackTitle)\s+"([^"]+)"\]')
 # Boundary: Splits strictly at the start of a new PGN block
 GAME_BOUNDARY = re.compile(r'\n(?=\[Event )')
 ELO_PATTERN = re.compile(r'\[WhiteElo "(\d+)"\]\s*\[BlackElo "(\d+)"\]')
 MAX_CHUNK_SIZE = 50 * MB  # Absolute upper limit to prevent OOM, can be adjusted based on testing
+N_RETRIES = 5
 
 PATHS = setup_project_directories(verbose=True)
 
@@ -50,49 +54,62 @@ def dynamic_chunk_size(num_workers: int, safety_factor: float = 0.2) -> int:
     return max(CHUNK_FLOOR, min(budget, MAX_CHUNK_SIZE))
 
 
-def get_url_content_info(url: str) -> dict:
+def get_url_content_info(url: str) -> Dict[str, Any]:
     """
-    Retrieves the content size and type for a given URL using a HEAD request, without downloading the entire body.
+    Retrieves metadata for a URL using a HEAD request with exponential backoff.
     """
-    try:
-        response: requests.Response = requests.head(url, timeout=10, allow_redirects=True)
-        response.raise_for_status()
-        headers = response.headers
-        content_type, content_length = headers.get("content-type"), headers.get("content-length")
-        content_length = int(content_length) if content_length is not None else 0
-        request_date, last_modified_date = headers.get("Date"), headers.get("Last-Modified")
-        status_code = response.status_code
-        domain = url.split("//")[1].split("/")[0]
+    with requests.Session() as session:
+        for attempt in range(N_RETRIES):
+            try:
+                response = session.head(url, timeout=10, allow_redirects=True, stream=True)
+                
+                # Handles common transient errors with retries
+                if response.status_code in (408, 429, 503, 504):
+                    wait_for = (2 ** attempt) + random.uniform(0, 1)
+                    log.warning(f"Retryable error {response.status_code} for {url}. "
+                                f"Attempt {attempt + 1}/{N_RETRIES}. Waiting {wait_for:.1f}s.")
+                    time.sleep(wait_for)
+                    continue
 
-        try:
-            port, ip_address = (
-                response.raw.connection.sock.getpeername()
-                if response.raw is not None and response.raw.connection and response.raw.connection.sock
-                else (None, None)
-            )
-        except Exception:
-            port, ip_address = (None, None)
+                # Treat other 4xx/5xx as terminal for this URL
+                response.raise_for_status()
 
-        return {
-            "url": url,
-            "server": response.headers.get('Server'),
-            "domain": domain,
-            "status_code": status_code,
-            "content_type": content_type,
-            "content_length": content_length,
-            "request_date": request_date,
-            "last_modified_date": last_modified_date,
-            "ip_address": ip_address,
-            "port": port
-        }
-    except requests.exceptions.Timeout:
-        log.error(f"TimeOutException: Request timed out for url -> {url}")
-    except requests.exceptions.RequestException as e:
-        log.error(f"An error occured while make the request to {url}: {e}")
-    except ValueError as e:
-        log.error(f"An error occured during request header manipulation: {e}")
-    except Exception as e:
-        log.error(f"An unexpected error occured: {e}")
+                headers = response.headers
+                content_length = headers.get("Content-Length")
+                
+                # Robust parsing of domain using standard library
+                parsed_url = urlparse(url)
+                domain = parsed_url.netloc
+
+                # Peer info extraction: Handle both raw socket and potential lack thereof
+                ip_address, port = None, None
+                try:
+                    # Accessing the underlying urllib3 connection
+                    conn = response.raw._connection if hasattr(response.raw, '_connection') else None
+                    if conn and hasattr(conn, 'sock') and conn.sock:
+                        ip_address, port = conn.sock.getpeername()
+                except Exception:
+                    pass
+
+                return {
+                    "url": url,
+                    "server": headers.get('Server'),
+                    "domain": domain,
+                    "status_code": response.status_code,
+                    "content_type": headers.get("Content-Type"),
+                    "content_length": int(content_length) if content_length and content_length.isdigit() else 0,
+                    "request_date": headers.get("Date"),
+                    "last_modified_date": headers.get("Last-Modified"),
+                    "ip_address": ip_address,
+                    "port": port
+                }
+
+            except requests.exceptions.RequestException as e:
+                log.error(f"Network error for {url} (attempt {attempt + 1}/{N_RETRIES}): {e}")
+                if attempt == N_RETRIES - 2: # Final attempt before giving up is after 2 ** 3 = 8 seconds
+                    return {}
+                time.sleep((2 ** attempt) + random.uniform(0, 1))
+
     return {}
 
   
@@ -233,11 +250,16 @@ def fast_filter_pgn_games(pgn_text: str, from_rating: int = 1500, to_rating: int
         black_elo = int(tags.get("BlackElo", 0))
         event = tags.get("Event", "")
         time_control = tags.get("TimeControl", "??")
+        white_title = tags.get("WhiteTitle", "??")
+        black_title = tags.get("BlackTitle", "??")
 
         if not event or "Rated" not in event or "Blitz" not in event:
             return False
         
         if time_control == "??" or time_control == "?":
+            return False
+        
+        if white_title == 'BOT' or black_title == 'BOT':
             return False
         
         # Ensure that the elo range for black and white fall within the stated range
