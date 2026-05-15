@@ -32,7 +32,7 @@ TAG_RE = re.compile(r'\[(WhiteElo|BlackElo|Event|TimeControl|WhiteTitle|BlackTit
 # Boundary: Splits strictly at the start of a new PGN block
 GAME_BOUNDARY = re.compile(r'\n(?=\[Event )')
 ELO_PATTERN = re.compile(r'\[WhiteElo "(\d+)"\]\s*\[BlackElo "(\d+)"\]')
-MAX_CHUNK_SIZE = 50 * MB  # Absolute upper limit to prevent OOM, can be adjusted based on testing
+MAX_CHUNK_SIZE = 20 * MB  # Absolute upper limit to prevent OOM, can be adjusted based on testing
 N_RETRIES = 5
 
 PATHS = setup_project_directories(verbose=True)
