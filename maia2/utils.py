@@ -149,30 +149,11 @@ def readable_time(elapsed_time: int) -> str:
         return f"{minutes}m {seconds}s"
     else:
         return f"{seconds}s"
-    
-    
 
-# def create_elo_dict():
-#     interval = 100
-#     start = 1100
-#     stop = 2000
-
-#     range_dict = {f"<{start}": 0}
-#     range_index = 1
-
-#     for lower_bound in range(start, stop, interval):
-#         upper_bound = lower_bound + interval - 1
-
-#         range_dict[f"{lower_bound}-{upper_bound}"] = range_index
-#         range_index += 1
-    
-#     range_dict[f">={stop}"] = range_index
-
-#     return range_dict
 
 def create_elo_dict():
     interval = 100
-    start = 500
+    start = 600
     stop = 1100
 
     range_dict = {f"<{start}": 0}
@@ -189,22 +170,8 @@ def create_elo_dict():
     return range_dict
 
 
-# def map_to_category(elo: int, elo_dict: dict) -> int:
-#     start = 1100
-#     stop = 2000
-#     interval = 100
-
-#     if elo < start:
-#         return elo_dict[f"<{start}"]
-#     elif elo >= stop:
-#         return elo_dict[f">={stop}"]
-#     else:
-#         lower_bound = start + ((elo - start) // interval) * interval
-#         upper_bound = lower_bound + interval - 1
-#         return elo_dict[f"{lower_bound}-{upper_bound}"]
-
 def map_to_category(elo: int, elo_dict: dict) -> int:
-    start = 500
+    start = 600
     stop = 1100
     interval = 100
 
