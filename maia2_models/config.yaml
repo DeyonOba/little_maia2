@@ -30,6 +30,7 @@ from_checkpoint: false
 checkpoint_epoch: 0
 checkpoint_year: 2018
 checkpoint_month: 5
+checkpoint_run_id: ""
 num_cpu_left: 16
 queue_length: 2
 
@@ -55,3 +56,9 @@ side_info_coefficient: 1.0
 value: true
 value_coefficient: 1.0
 max_games_per_elo_range: 20
+
+# MLflow Tracking / Model Registry
+tracking_enabled: true
+tracking_uri: "./mlruns"
+experiment_name: "maia2_blitz"
+registered_model_name: "MAIA2Blitz"
