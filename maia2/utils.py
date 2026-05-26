@@ -34,7 +34,7 @@ def setup_project_directories(run_test: bool = False, verbose: bool = False) -> 
     Initialize project directories before code execution or data processing
     """
 
-    root = Path(".")
+    root = Path(__file__).parent.parent.resolve()
 
     data_dir_name = "test_data" if run_test else "maia2_data" 
 
@@ -43,7 +43,7 @@ def setup_project_directories(run_test: bool = False, verbose: bool = False) -> 
         "processed_data": root / data_dir_name / "processed",
         "ratings_data": root / data_dir_name / "ratings_distribution",
         "data_checkpoints": root / data_dir_name / "checkpoints",
-        "ml_checkpoints": root / "maia2_models" / "checkpoints",
+        "ml_models": root / "maia2_models",
         "logs": root / "logs"
     }
 
