@@ -431,7 +431,7 @@ def train_chunks(cfg, data, model, optimizer, all_moves_dict, criterion_maia, cr
                                                     batch_size=30, 
                                                     shuffle=True, 
                                                     drop_last=False,
-                                                    num_workers=cpu_count())
+                                                    num_workers=cfg.num_cpu_left)
     if cfg.verbose:
         dataloader_train = tqdm.tqdm(dataloader_train)
     
