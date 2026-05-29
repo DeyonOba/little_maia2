@@ -22,6 +22,8 @@ import pdb
 
 log = get_logger("training")
 
+client = mlflow.MlflowClient()
+
 
 def _git_sha() -> str:
     try:
@@ -50,8 +52,7 @@ def run(cfg):
     for arg in vars(cfg):
         print(f'\t{arg}: {getattr(cfg, arg)}', flush=True)
     seed_everything(cfg.seed)
-    # num_processes = cpu_count() - cfg.num_cpu_left
-    num_processes = cpu_count() // 2
+    num_processes = cfg.num_cpu_left
 
     checkpoint_info = f'{cfg.lr}_{cfg.batch_size}_{cfg.wd}_{cfg.start_year}-{cfg.start_month:02d}_{cfg.end_year}-{cfg.end_month:02d}'
 
@@ -73,6 +74,7 @@ def run(cfg):
                 mlflow.set_tag("resumed_from", f"{cfg.checkpoint_year}-{cfg.checkpoint_month:02d}")
                 if getattr(cfg, "checkpoint_run_id", ""):
                     mlflow.set_tag("parent_run_id", cfg.checkpoint_run_id)
+            
             config_artifact = paths["ml_models"] / "config.yaml"
             if config_artifact.exists():
                 mlflow.log_artifact(str(config_artifact))
@@ -107,6 +109,27 @@ def run(cfg):
                     "Set checkpoint_run_id in config.yaml to the MLflow run that produced the checkpoint."
                 )
             log.info(f"Loading checkpoint from MLflow run {run_id}, epoch {cfg.checkpoint_epoch} of {cfg.checkpoint_year}-{cfg.checkpoint_month:02d}")
+            
+            old_run_data = client.get_run(run_id).data
+            ignored_params = {"checkpoint_epoch", "checkpoint_year", "checkpoint_month", "checkpoint_run_id", "n_params"}
+            for param_key, param_val in old_run_data.params.items():
+                if param_key in ignored_params:
+                    continue
+
+                current_val = getattr(cfg, param_key, "<missing>")
+                if str(current_val) != param_val:
+                    log.warning(
+                        f"Checkpoint was trained with {param_key}={param_val} but current config has {param_key}={current_val}. "
+                        f"Using value from checkpoint config for consistency: {param_key}={param_val}"
+                    )
+            
+            for metric_key in old_run_data.metrics.keys():
+                metric_history = client.get_metric_history(run_id, metric_key)
+                for m in metric_history:
+                    mlflow.log_metric(metric_key, m.value, step=m.step, timestamp=m.timestamp)
+
+            del old_run_data
+
             mlflow.set_tracking_uri(getattr(cfg, "tracking_uri", "./mlruns"))
             artifact_path = (
                 f"checkpoints/epoch_{cfg.checkpoint_epoch}/"
@@ -119,13 +142,19 @@ def run(cfg):
             accumulated_samples = checkpoint['accumulated_samples']
             accumulated_games = checkpoint['accumulated_games']
 
-        for epoch in range(cfg.max_epochs):
+        start_epoch = cfg.checkpoint_epoch - 1 if cfg.from_checkpoint else 1
+        for epoch in range(start_epoch, cfg.max_epochs):
 
             log.info(f'Epoch {epoch + 1}')
             pgn_filenames = read_monthly_data_filenames(cfg)
 
             num_file = 0
             for filename in pgn_filenames:
+                if cfg.from_checkpoint and (filename < f"{cfg.checkpoint_year}_{cfg.checkpoint_month:02d}.pgn" and (start_epoch == epoch)):
+                    log.info(f'Skipping {filename} because it is less than or equal to checkpoint date {cfg.checkpoint_year}_{cfg.checkpoint_month:02d}')
+                    num_file += 1
+                    continue
+
                 log.info(f'Processing {filename}')
 
                 start_time = time.time()
