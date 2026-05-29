@@ -142,7 +142,7 @@ def run(cfg):
             accumulated_samples = checkpoint['accumulated_samples']
             accumulated_games = checkpoint['accumulated_games']
 
-        start_epoch = cfg.checkpoint_epoch - 1 if cfg.from_checkpoint else 1
+        start_epoch = cfg.checkpoint_epoch - 1 if cfg.from_checkpoint else 0
         for epoch in range(start_epoch, cfg.max_epochs):
 
             log.info(f'Epoch {epoch + 1}')
