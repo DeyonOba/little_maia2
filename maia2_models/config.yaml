@@ -1,5 +1,7 @@
 # General Settings
-data_root: "/datadrive2/lichess_data"
+# data_root: "/datadrive2/lichess_data"
+data_root: "./maia2_data"
+test_data_root: "./test_data"
 seed: 42
 num_workers: 16
 verbose: 1
@@ -7,14 +9,28 @@ max_epochs: 3
 max_ply: 300
 clock_threshold: 30
 chunk_size: 20000
-start_year: 2018
+
+# Data Filtering Settings
+start_year: 2013
 start_month: 5
-end_year: 2023
-end_month: 11
+end_year: 2026
+end_month: 4
+elo_upper_bound: 1200
+elo_lower_bound: 400
+
+# Async downloader (politeness to lichess.org)
+download_workers: 4
+max_concurrent_requests: 4
+request_timeout_seconds: 60
+download_max_retries: 3
+download_max_throttle_retries: 10
+month_failure_backoff_seconds: 30
+
 from_checkpoint: false
 checkpoint_epoch: 0
 checkpoint_year: 2018
 checkpoint_month: 5
+checkpoint_run_id: ""
 num_cpu_left: 16
 queue_length: 2
 
@@ -40,3 +56,9 @@ side_info_coefficient: 1.0
 value: true
 value_coefficient: 1.0
 max_games_per_elo_range: 20
+
+# MLflow Tracking / Model Registry
+tracking_enabled: true
+tracking_uri: "./mlruns"
+experiment_name: "maia2_blitz"
+registered_model_name: "MAIA2Blitz"

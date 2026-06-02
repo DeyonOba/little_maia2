@@ -1,30 +1,30 @@
 import logging.config
 import logging
 import pathlib
+from maia2.utils import setup_project_directories
 
-def setup_log_directory():
-    log_dir_path = pathlib.Path(__file__).parent / "logs"
-    
-    if not log_dir_path.exists():
-        print("Creating logs directory")
-        log_dir_path.mkdir(parents=True, exist_ok=True)
-        print(f"Created logs directory: {log_dir_path}")
-    return log_dir_path
 
-log_path = setup_log_directory()
+log_path = setup_project_directories()["logs"]
 
 LOGGING_CONFIG = {
     'version': 1,
-    'disable_existing_loggers': True, # Keep existing loggers
+    'disable_existing_loggers': False,
+    'root': {
+        'handlers': ['file'],
+        'level': 'DEBUG',
+    },
     'formatters': {
         'standard': {
             'format': '%(asctime)s [%(levelname)s] %(name)s: %(message)s' 
         },
+        "console": {
+            "format": "%(message)s"
+        }
     },
     'handlers': {
         'console': {
             'class': 'logging.StreamHandler', #
-            'formatter': 'standard',
+            'formatter': 'console',
         },
         "data_file": {
             "class": "logging.handlers.RotatingFileHandler",
@@ -60,6 +60,7 @@ LOGGING_CONFIG = {
         }
     }
 }
+
 
 def get_logger(name: str) -> logging.Logger:
     logging.config.dictConfig(LOGGING_CONFIG)
